@@ -709,7 +709,223 @@ lines(days_sequence, fitted, col = "red", lty = 2)
 legend("topright", legend = c("Actual", "Predicted"), col = c("blue", "red"), lty = c(1, 2), lwd = 2)
 ```
 
-Ultimately the ARIMA model was informative in the fact that they showed us how dramatically sales data differs across stores. For this reason, and other limitations of the dataset's applicability to ARIMA modeling, we decided that this approach was not going to be as useful to Maverik as our other models so we did not test the accuracies of the models on the test set. The limitations of the dataset that made creating a singular arima model on all the available information is that each store had to be treated as a singular time series object. Even when we tried to create a standardized value for tracking time series days, we were not able to create a time series based on all of the data available which meant we had to create an arima model for each site individually. The loop that we created to implement our final ARIMA models for each store was not included in this file to focus more on models that could be used to actually predict a new stores sales but it did show that each store has its own respective p, d, and q values that optimize the model. While a better predictive model was created in our other models, we believe that this modeling process could still be of use to Maverik as it illustrates how important the features that we engineered are to improving model performance. For example, the final model that was created above that takes the optimal model parameters, determined by running auto.arima, and applies it an ARIMA model that contains the features we engineered improves model performance substantially, with a decrease in RMSE from 1131.236 in the auto.arima model to 733.1196 in the final model. Other important performance metrics such as MAPE, MAE and autocorrelations of residuals in the final model also show significant improvement over the base auto arima model created.
+Ultimately the ARIMA model was informative in the fact that they showed us how dramatically sales data differs across stores. For this reason, and other limitations of the dataset's applicability to ARIMA modeling, we decided that this approach was not going to be as useful to Maverik as our other models but decided to test the accuracy of a singular arima model with external regressors on the test sites. To do so, we created a loop that generated an auto ARIMA model for each of the sites in the train set, then a loop that created an ARIMA model with external regressors for each of the test sites, and finally determined the values of p, d, and q that represented the optimal parameter combinations from the majority of the train set. This combination of p, d, and q values, determined by the majority of the train set, was then applied in a loop to the test sites and RMSE values were calculated as an average across the stores in the test set. The limitations of the dataset that made creating a singular arima model on all the available information are that each store had to be treated as a singular time series object. Even when we tried to create a standardized value for tracking time series days, we were not able to create a time series based on all of the data available which meant we had to create an arima model for each site individually. The loop that we created to implement our final ARIMA models for each store showed that each store has its own respective p, d, and q values that optimize the model and these vary quite a bit from store to store as well as within each sales category of a singular store, which inflated our RMSE scores as we were applying only one combination of p, d, and q values to all test sites. While a better predictive model was created in our other models, we believe that this modeling process could still be of use to Maverik as it illustrates how important the features that we engineered are to improving model performance. For example, the final model that was created above that takes the optimal model parameters from one store, determined by running auto.arima, and applies it an ARIMA model that contains the features we engineered improves model performance substantially, with a decrease in RMSE from 1131.236 in the auto.arima model to 733.1196 in the final model. Other important performance metrics such as MAPE, MAE and autocorrelation of residuals in the final model also show significant improvement over the base auto arima model created. The code used in the workflow outlined above is shown below.
+
+```{r}
+train_set_ids <- unique(train_set$site_id_msba)
+
+test_set_ids <- unique(test_set$site_id_msba)
+
+arima_vars
+
+# Specify which sales category you want to model on
+# Options are diesel, unleaded, daily_yoy_ndt.total_food_service, daily_yoy_ndt.total_inside_sales
+
+target_var_name <- "diesel"
+```
+
+```{r}
+# Create a list to store ARIMA models for each site ID
+arima_models <- list()
+
+for (site_id in train_set_ids) {
+  # Subset the data for the current site ID
+  site_data_subset <- arima_vars[arima_vars$site_id_msba == site_id, ]
+  
+  # Extract the target variable for the current site ID
+  target_var <- site_data_subset[[target_var_name]]
+  
+  # Create a time series for the current site
+  site_ts <- ts(target_var,
+                 start = as.numeric(format(min(site_data_subset$calendar.calendar_day_date), "%Y")),
+                 end = as.numeric(format(max(site_data_subset$calendar.calendar_day_date), "%Y")),
+                 frequency = 365)
+  
+  # Fit an ARIMA model for the current site using auto.arima
+  arima_model <- auto.arima(site_ts)
+  
+  # Store the ARIMA model in the list
+  arima_models[[as.character(site_id)]] <- arima_model
+}
+
+# Now, there is a list of auto ARIMA models, one for each site ID in train set
+```
+
+```{r}
+# Create a list to store ARIMA models with external regressors for train site ID
+arima_models_with_xreg <- list()
+
+# Loop through unique site IDs
+for (site_id in train_set_ids) {
+  # Subset the data for the current site ID
+  site_data_subset <- arima_vars[arima_vars$site_id_msba == site_id, ]
+  
+  # Extract the target variable for the current site ID
+  target_var <- site_data_subset[[target_var_name]]
+  
+  # Create a time series for the current site
+  site_ts <- ts(target_var,
+                 start = as.numeric(format(min(site_data_subset$calendar.calendar_day_date), "%Y")),
+                 end = as.numeric(format(max(site_data_subset$calendar.calendar_day_date), "%Y")),
+                 frequency = 365)
+  
+  # Subset external regressors for the current site
+  external_regressors <- data.frame(
+    holiday_indicator = site_data_subset$major_holiday_indicator,
+    week_of_yr = site_data_subset$calendar.fiscal_week_id_for_year,
+    day_of_week = site_data_subset$day_of_week_num)
+  
+  # Convert the binary categorical variable to matrix
+  external_regressors_matrix <- model.matrix(~ . - 1, data = external_regressors)
+  
+  # Hide the column names by setting them to NULL
+  colnames(external_regressors_matrix) <- NULL
+  
+  # Fit an ARIMA model with external regressors for the current site
+  arima_model_with_xreg <- Arima(site_ts, xreg = external_regressors_matrix)
+  
+  # Store the ARIMA model in the list
+  arima_models_with_xreg[[as.character(site_id)]] <- arima_model_with_xreg
+}
+
+```
+
+```{r}
+# Create a list to store optimal ARIMA order values for each train site ID
+optimal_orders <- list()
+
+# Loop through unique site IDs
+for (site_id in train_set_ids) {
+  # Subset the data for the current site ID
+  site_data_subset <- arima_vars[arima_vars$site_id_msba == site_id, ]
+  
+  # Extract the target variable for the current site ID
+  target_var <- site_data_subset[[target_var_name]]
+  
+  # Create a time series for the current site
+  site_ts <- ts(target_var,
+                 start = as.numeric(format(min(site_data_subset$calendar.calendar_day_date), "%Y")),
+                 end = as.numeric(format(max(site_data_subset$calendar.calendar_day_date), "%Y")),
+                 frequency = 365)
+  
+  # Fit an ARIMA model for the current site using auto.arima
+  arima_model <- auto.arima(site_ts)
+  
+  # Extract the optimal order values (p, d, q) from the ARIMA model
+  order_values <- arimaorder(arima_model)
+  
+  # Store the optimal order values in the list
+  optimal_orders[[as.character(site_id)]] <- order_values
+}
+```
+
+```{r}
+# Convert list elements to a data frame
+optimal_orders_df <- as.data.frame(do.call(rbind, optimal_orders))
+
+# Find the most frequent combination
+most_frequent_combination <- as.data.frame(table(optimal_orders_df$p, optimal_orders_df$d, optimal_orders_df$q))
+names(most_frequent_combination) <- c("p", "d", "q", "frequency")
+most_frequent_combination <- most_frequent_combination[order(-most_frequent_combination$frequency), ]
+
+# Extract the most frequent combination of p, d, and q from the DataFrame
+most_frequent_p <- most_frequent_combination$p[1]
+most_frequent_d <- most_frequent_combination$d[1]
+most_frequent_q <- most_frequent_combination$q[1]
+
+# Convert factor variables to numeric
+most_frequent_p <- as.numeric(as.character(most_frequent_p))
+most_frequent_d <- as.numeric(as.character(most_frequent_d))
+most_frequent_q <- as.numeric(as.character(most_frequent_q))
+```
+
+```{r}
+# Specify the number for observed sales
+observed_sales_end <- 14  # Change this number to the desired value
+
+# Create a list to store total summed values for observed and predicted sales for each site ID
+total_summed_values <- list()
+
+# Loop through each test site ID
+for (site_id in test_set_ids) {
+  # Subset the data for the current site ID from the test set
+  site_data_subset <- arima_vars[arima_vars$site_id_msba == site_id, ]
+  
+  # Extract the target variable for the current site ID
+  target_var <- site_data_subset[[target_var_name]]
+  
+  # Create time series object for site id
+  site_ts <- ts(target_var,
+                 start = min(site_data_subset$Days_Since_Open),
+                 frequency = 1)
+  
+  # Specify the ARIMA order values for this site
+  p <- most_frequent_p
+  d <- most_frequent_d
+  q <- most_frequent_q
+  
+  # Extract external regressors for the current site
+  external_regressors <- data.frame(
+    holiday_indicator = site_data_subset$major_holiday_indicator,
+    week_of_yr = site_data_subset$calendar.fiscal_week_id_for_year,
+    day_of_week = site_data_subset$day_of_week_num)
+  
+  external_regressors_matrix <- model.matrix(~ . - 1, data = external_regressors)
+  colnames(external_regressors_matrix) <- NULL
+  
+  # Fit an ARIMA model with specified orders and external regressors for the current site
+  arima_model <- tryCatch({
+    Arima(site_ts, order = c(p, d, q), xreg = external_regressors_matrix)
+  }, error = function(e) {
+    message("Model fitting failed for site ID: ", site_id)
+    return(NULL)
+  })
+  
+  if (!is.null(arima_model)) {
+  # Get observed sales from days 1 to 14
+  observed_sales <- sum(window(site_ts, end = observed_sales_end))
+  
+  # Extract external regressors for the forecasting period
+  forecasted_values_start <- observed_sales_end + 1
+  external_regressors_fc <- external_regressors_matrix[forecasted_values_start:365, ]
+  
+  # Make predictions using external regressors for the specific forecasting period
+  predicted_values <- predict(arima_model, n.ahead = 365 - observed_sales_end, newxreg = external_regressors_fc)
+  
+  # Sum the predicted values for specified days
+  predicted_sales <- sum(predicted_values$pred)
+  
+  # Calculate total summed values for observed sales for specified window and predicted sales for remaining
+  total_summed_values[[as.character(site_id)]] <- observed_sales + predicted_sales
+  }
+}
+```
+
+```{r}
+# Create a list to store RMSE values for each site ID
+rmse_values <- list()
+
+# Loop through each test site ID
+for (site_id in test_set_ids) {
+    # Retrieve the observed sales for the current site ID
+    observed_sales <- sum(arima_vars$target_var_name[arima_vars$site_id_msba == site_id & arima_vars$Days_Since_Open <= observed_sales_end])
+
+    # Get the predicted total summed values for the current site ID
+    predicted_sales <- total_summed_values[[as.character(site_id)]]
+
+    # Calculate the squared difference between observed and predicted values
+    squared_diff <- (observed_sales - predicted_sales)^2
+
+    # Calculate the Root Mean Squared Error (RMSE)
+    rmse <- sqrt(squared_diff)
+
+    # Store RMSE value for the current site ID
+    rmse_values[[as.character(site_id)]] <- rmse
+}
+
+# Calculate the average of RMSE values
+avg_rmse <- mean(unlist(rmse_values))
+```
 
 ## Vector Auto Regression
 
